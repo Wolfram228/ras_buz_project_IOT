@@ -1,0 +1,172 @@
+Этот скетч превращает ESP8266 в Wi-Fi пульт для робота.
+ESP8266 подключается к существующей Wi-Fi сети как клиент, 
+получает IP-адрес и запускает веб-сервер на порту 80. 
+В браузере открывается страница с кнопками: вперёд, назад, влево, вправо и стоп (при 
+заклинивании механизма, на всякий случай).
+При нажатии кнопки браузер отправляет GET-запрос вида:
+/cmd?action=F/B/L/R/S 
+
+Сервер принимает команду и вызывает нужную функцию,
+которая подаёт логические уровни на входы драйвера L9110.
+Драйвер управляет двумя моторами: вперёд/назад — оба мотора крутятся в одну сторону, 
+влево/вправо — моторы вращаются в противоположные стороны,
+ стоп — все входы выключены.
+
+ В loop() ESP8266 постоянно обрабатывает HTTP-запросы.
+
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+
+const char* ssid = "LOGIN";
+const char* password = "PASSWORD";
+
+#define MOTOR_A_IA D1
+#define MOTOR_A_IB D2
+#define MOTOR_B_IA D5
+#define MOTOR_B_IB D6
+
+const int MOTOR_SPEED = 50;
+ESP8266WebServer server(80);
+
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Управление моторами</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; background: #f0f0f0; }
+    h1 { color: #333; }
+    .container { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; max-width: 400px; margin: 0 auto; }
+    .btn {
+      padding: 30px 10px;
+      font-size: 20px;
+      font-weight: bold;
+      border: none;
+      border-radius: 10px;
+      color: white;
+      cursor: pointer;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: manipulation;
+      transition: 0.1s;
+    }
+    .btn:active { transform: scale(0.95); opacity: 0.8; }
+    .forward  { background: #4CAF50; grid-column: 2; }
+    .backward { background: #f44336; grid-column: 2; }
+    .left     { background: #2196F3; grid-column: 1; grid-row: 2; }
+    .right    { background: #FF9800; grid-column: 3; grid-row: 2; }
+    .stop     { background: #9E9E9E; grid-column: 2; grid-row: 3; }
+  </style>
+</head>
+<body>
+  <h1>🚗 Управление</h1>
+  <div class="container">
+    <button class="btn forward"  onmousedown="send('F')" onmouseup="send('S')" ontouchstart="send('F')" ontouchend="send('S')">⬆️</button>
+    <button class="btn left"     onmousedown="send('L')" onmouseup="send('S')" ontouchstart="send('L')" ontouchend="send('S')">⬅️</button>
+    <button class="btn right"    onmousedown="send('R')" onmouseup="send('S')" ontouchstart="send('R')" ontouchend="send('S')">➡️</button>
+    <button class="btn backward" onmousedown="send('B')" onmouseup="send('S')" ontouchstart="send('B')" ontouchend="send('S')">⬇️</button>
+    <button class="btn stop"     onmousedown="send('S')" onmouseup="send('S')">⏹️ СТОП</button>
+  </div>
+
+  <script>
+    function send(cmd) {
+      fetch('/cmd?action=' + cmd).catch(e => console.log(e));
+    }
+    document.addEventListener('mouseleave', function() { send('S'); });
+    document.addEventListener('touchend', function() { send('S'); });
+  </script>
+</body>
+</html>
+)rawliteral";
+
+void stopMotors() {
+  digitalWrite(MOTOR_A_IA, LOW);
+  digitalWrite(MOTOR_A_IB, LOW);
+  digitalWrite(MOTOR_B_IA, LOW);
+  digitalWrite(MOTOR_B_IB, LOW);
+}
+
+void moveForward() {
+  digitalWrite(MOTOR_A_IA, MOTOR_SPEED);
+  digitalWrite(MOTOR_A_IB, LOW);
+  digitalWrite(MOTOR_B_IA, MOTOR_SPEED);
+  digitalWrite(MOTOR_B_IB, LOW);
+}
+
+void moveBackward() {
+  digitalWrite(MOTOR_A_IA, LOW);
+  digitalWrite(MOTOR_A_IB, MOTOR_SPEED);
+  digitalWrite(MOTOR_B_IA, LOW);
+  digitalWrite(MOTOR_B_IB, MOTOR_SPEED);
+}
+
+void turnLeft() {
+  digitalWrite(MOTOR_A_IA, MOTOR_SPEED);
+  digitalWrite(MOTOR_A_IB, LOW);
+  digitalWrite(MOTOR_B_IA, LOW);
+  digitalWrite(MOTOR_B_IB, MOTOR_SPEED);
+}
+
+void turnRight() {
+  digitalWrite(MOTOR_A_IA, LOW);
+  digitalWrite(MOTOR_A_IB, MOTOR_SPEED);
+  digitalWrite(MOTOR_B_IA, MOTOR_SPEED);
+  digitalWrite(MOTOR_B_IB, LOW);
+}
+
+void handleRoot() {
+  server.send_P(200, "text/html", index_html);
+}
+
+void handleCommand() {
+  String action = server.arg("action");
+  Serial.println("Команда: " + action);
+
+  if      (action == "F") moveForward();
+  else if (action == "B") moveBackward();
+  else if (action == "L") turnLeft();
+  else if (action == "R") turnRight();
+  else                    stopMotors();
+
+  server.send(200, "text/plain", "OK");
+}
+
+void handleNotFound() {
+  server.send(404, "text/plain", "Not Found");
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(100);
+
+  pinMode(MOTOR_A_IA, OUTPUT);
+  pinMode(MOTOR_A_IB, OUTPUT);
+  pinMode(MOTOR_B_IA, OUTPUT);
+  pinMode(MOTOR_B_IB, OUTPUT);
+  stopMotors();
+
+  Serial.print("Подключение к Wi-Fi: ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("\nWi-Fi подключен!");
+  Serial.print("IP-адрес: ");
+  Serial.println(WiFi.localIP());
+
+  server.on("/", handleRoot);
+  server.on("/cmd", handleCommand);
+  server.onNotFound(handleNotFound);
+  server.begin();
+  Serial.println("HTTP-сервер запущен. Откройте браузер и перейдите по IP-адресу выше.");
+}
+
+void loop() {
+  server.handleClient();
+}
